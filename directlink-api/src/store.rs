@@ -15,6 +15,7 @@ pub struct CreateToken {
     pub expires_at: Option<i64>,
     #[serde(default = "default_rate")]
     pub rate_per_minute: i64,
+    pub max_uses: Option<i64>,
 }
 fn default_rate() -> i64 {
     10
@@ -32,6 +33,8 @@ pub struct EditToken {
     #[serde(default, deserialize_with = "expiry")]
     pub expires_at: Option<Option<i64>>,
     pub rate_per_minute: Option<i64>,
+    #[serde(default, deserialize_with = "expiry")]
+    pub max_uses: Option<Option<i64>>,
 }
 #[derive(Debug, Serialize, Clone)]
 pub struct TokenRecord {
@@ -48,6 +51,8 @@ pub struct TokenRecord {
     pub rate_per_minute: i64,
     pub success_count: i64,
     pub failure_count: i64,
+    pub max_uses: Option<i64>,
+    pub used_count: i64,
 }
 #[derive(Debug, Serialize)]
 pub struct IssuedToken {
@@ -57,7 +62,7 @@ pub struct IssuedToken {
 pub struct Store {
     connection: Mutex<Connection>,
 }
-const COLUMNS:&str="id,name,note,display_prefix,enabled,revoked_at,expires_at,created_at,updated_at,last_used_at,rate_per_minute,success_count,failure_count";
+const COLUMNS:&str="id,name,note,display_prefix,enabled,revoked_at,expires_at,created_at,updated_at,last_used_at,rate_per_minute,success_count,failure_count,max_uses,used_count";
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenRecord> {
     Ok(TokenRecord {
         id: r.get(0)?,
@@ -73,6 +78,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TokenRecord> {
         rate_per_minute: r.get(10)?,
         success_count: r.get(11)?,
         failure_count: r.get(12)?,
+        max_uses: r.get(13)?,
+        used_count: r.get(14)?,
     })
 }
 fn digest(secret: &str) -> String {
@@ -121,6 +128,66 @@ fn authorize(conn: &Connection, secret: &str, now: i64) -> Result<TokenRecord, E
     Ok(t)
 }
 impl Store {
+    /// Atomic per-file reservation. Failure attempts consume a use; browsing does not.
+    pub fn reserve_file(&self, id: &str, now: i64) -> Result<(), Error> {
+        self.reserve(id, None, now)
+    }
+    pub fn reserve_authenticated(&self, id: &str, secret: &str, now: i64) -> Result<(), Error> {
+        self.reserve(id, Some(secret), now)
+    }
+    fn reserve(&self, id: &str, secret: Option<&str>, now: i64) -> Result<(), Error> {
+        let mut c = self.connection.lock().map_err(|_| Error::Storage)?;
+        let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(secret) = secret {
+            if authorize(&tx, secret, now)?.id != id {
+                return Err(Error::InvalidToken);
+            }
+        }
+        let record = get(&tx, id)?;
+        if record.revoked_at.is_some() {
+            return Err(Error::InvalidToken);
+        }
+        if !record.enabled {
+            return Err(Error::Disabled);
+        }
+        if record.expires_at.is_some_and(|t| now >= t) {
+            return Err(Error::Expired);
+        }
+        if record.max_uses.is_some_and(|max| record.used_count >= max) {
+            return Err(Error::QuotaExhausted);
+        }
+        tx.execute(
+            "UPDATE api_tokens SET used_count=used_count+1,last_used_at=?1 WHERE id=?2",
+            params![now, id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn reset_usage(&self, id: &str, now: i64) -> Result<TokenRecord, Error> {
+        let c = self.connection.lock().map_err(|_| Error::Storage)?;
+        if c.execute(
+            "UPDATE api_tokens SET used_count=0,updated_at=?1 WHERE id=?2",
+            params![now, id],
+        )? != 1
+        {
+            return Err(Error::NotFound);
+        }
+        get(&c, id)
+    }
+    /// Rotate the secret, never resurrect the revoked credential. Preserve expiry/quota/audit.
+    pub fn rotate(&self, id: &str, now: i64) -> Result<IssuedToken, Error> {
+        let mut bytes = [0u8; 32];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut bytes)
+            .map_err(|_| Error::Storage)?;
+        let token = format!("dl_{}", URL_SAFE_NO_PAD.encode(bytes));
+        let c = self.connection.lock().map_err(|_| Error::Storage)?;
+        if c.execute("UPDATE api_tokens SET secret_hash=?1,display_prefix=?2,enabled=1,revoked_at=NULL,updated_at=?3 WHERE id=?4",params![digest(&token),&token[..11],now,id])?!=1{return Err(Error::NotFound);}
+        Ok(IssuedToken {
+            record: get(&c, id)?,
+            token,
+        })
+    }
     pub fn record_result(&self, id: &str, success: bool) -> Result<(), Error> {
         let conn = self.connection.lock().map_err(|_| Error::Storage)?;
         let count=conn.execute("UPDATE api_tokens SET success_count=success_count+?1,failure_count=failure_count+?2 WHERE id=?3",params![i64::from(success),i64::from(!success),id])?;
@@ -148,13 +215,25 @@ impl Store {
         CREATE TABLE IF NOT EXISTS rate_windows(
           token_id TEXT NOT NULL REFERENCES api_tokens(id),bucket TEXT NOT NULL,window INTEGER NOT NULL,
           count INTEGER NOT NULL,PRIMARY KEY(token_id,bucket));")?;
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(api_tokens)")?
+            .query_map([], |r| r.get(1))?
+            .collect::<Result<_, _>>()?;
+        if !columns.iter().any(|c| c == "max_uses") {
+            conn.execute_batch("ALTER TABLE api_tokens ADD COLUMN max_uses INTEGER CHECK(max_uses IS NULL OR max_uses>=0);")?;
+        }
+        if !columns.iter().any(|c| c == "used_count") {
+            conn.execute_batch(
+                "ALTER TABLE api_tokens ADD COLUMN used_count INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
         Ok(Self {
             connection: Mutex::new(conn),
         })
     }
     pub fn create(&self, input: CreateToken, now: i64) -> Result<IssuedToken, Error> {
         validate(&input.name, &input.note, input.rate_per_minute)?;
-        if input.expires_at.is_some_and(|v| v <= now) {
+        if input.max_uses.is_some_and(|v| v < 0) || input.expires_at.is_some_and(|v| v <= now) {
             return Err(Error::Input);
         }
         let mut bytes = [0u8; 32];
@@ -164,7 +243,7 @@ impl Store {
         let token = format!("dl_{}", URL_SAFE_NO_PAD.encode(bytes));
         let id = uuid::Uuid::new_v4().to_string();
         let c = self.connection.lock().map_err(|_| Error::Storage)?;
-        c.execute("INSERT INTO api_tokens(id,name,note,display_prefix,secret_hash,expires_at,created_at,updated_at,rate_per_minute) VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8)",params![id,input.name.trim(),input.note,&token[..11],digest(&token),input.expires_at,now,input.rate_per_minute])?;
+        c.execute("INSERT INTO api_tokens(id,name,note,display_prefix,secret_hash,expires_at,created_at,updated_at,rate_per_minute,max_uses) VALUES(?1,?2,?3,?4,?5,?6,?7,?7,?8,?9)",params![id,input.name.trim(),input.note,&token[..11],digest(&token),input.expires_at,now,input.rate_per_minute,input.max_uses])?;
         Ok(IssuedToken {
             token,
             record: get(&c, &id)?,
@@ -198,7 +277,11 @@ impl Store {
             return Err(Error::Input);
         }
         let expires = edit.expires_at.unwrap_or(old.expires_at);
-        tx.execute("UPDATE api_tokens SET name=?1,note=?2,rate_per_minute=?3,expires_at=?4,enabled=?5,updated_at=?6 WHERE id=?7",params![name.trim(),note,rate,expires,edit.enabled.unwrap_or(old.enabled),now,id])?;
+        let max_uses = edit.max_uses.unwrap_or(old.max_uses);
+        if max_uses.is_some_and(|v| v < 0) {
+            return Err(Error::Input);
+        }
+        tx.execute("UPDATE api_tokens SET name=?1,note=?2,rate_per_minute=?3,expires_at=?4,enabled=?5,updated_at=?6,max_uses=?8 WHERE id=?7",params![name.trim(),note,rate,expires,edit.enabled.unwrap_or(old.enabled),now,id,max_uses])?;
         let result = get(&tx, id)?;
         tx.commit()?;
         Ok(result)

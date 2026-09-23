@@ -11,6 +11,8 @@ pub enum Error {
     InvalidToken,
     #[error("API Token 已被禁用")]
     Disabled,
+    #[error("Token 提取次数已用尽，请联系管理员增加额度")]
+    QuotaExhausted,
     #[error("API Token 已过期")]
     Expired,
     #[error("API Token 已撤销，不可恢复")]
@@ -33,8 +35,10 @@ pub enum Error {
     PasswordInvalid,
     #[error("分享已失效或不存在")]
     ShareUnavailable,
-    #[error("仅支持分享根目录普通文件，每次最多20个且总计不超过2GiB；请缩小选择范围")]
-    FileLimit,
+    #[error("所选文件未在分享中找到，请刷新文件列表重新选择")]
+    SelectionNotFound,
+    #[error("文件夹内容读取失败，未能完整遍历该目录，请重试")]
+    DirectoryFailed,
     #[error("正在处理其他提取请求，请稍后重试")]
     Busy,
     #[error("等待超时，转存可能仍在执行；请到原转存任务页面检查，勿立即重复提交")]
@@ -50,6 +54,7 @@ impl Error {
             Self::InvalidToken => "invalid_token",
             Self::Disabled => "token_disabled",
             Self::Expired => "token_expired",
+            Self::QuotaExhausted => "token_quota_exhausted",
             Self::Revoked => "token_revoked",
             Self::Input => "invalid_input",
             Self::NotFound => "not_found",
@@ -61,7 +66,8 @@ impl Error {
             Self::PasswordRequired => "share_password_required",
             Self::PasswordInvalid => "share_password_invalid",
             Self::ShareUnavailable => "share_unavailable",
-            Self::FileLimit => "file_limit",
+            Self::SelectionNotFound => "selection_not_found",
+            Self::DirectoryFailed => "directory_failed",
             Self::Busy => "resolver_busy",
             Self::Timeout => "resolve_timeout",
             Self::TransferFailed => "transfer_failed",
@@ -70,7 +76,11 @@ impl Error {
     pub fn status(&self) -> StatusCode {
         match self {
             Self::InvalidToken | Self::Admin => StatusCode::UNAUTHORIZED,
-            Self::Disabled | Self::Expired | Self::Revoked | Self::Origin => StatusCode::FORBIDDEN,
+            Self::Disabled
+            | Self::Expired
+            | Self::Revoked
+            | Self::Origin
+            | Self::QuotaExhausted => StatusCode::FORBIDDEN,
             Self::Input => StatusCode::BAD_REQUEST,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Limited => StatusCode::TOO_MANY_REQUESTS,
@@ -79,7 +89,7 @@ impl Error {
             Self::PasswordRequired | Self::PasswordInvalid | Self::ShareUnavailable => {
                 StatusCode::BAD_REQUEST
             }
-            Self::FileLimit => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::SelectionNotFound | Self::DirectoryFailed => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
             Self::TransferFailed => StatusCode::BAD_GATEWAY,
         }

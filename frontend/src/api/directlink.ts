@@ -5,13 +5,16 @@ export interface ApiToken {
   id: string; name: string; note: string; display_prefix: string
   enabled: boolean; revoked_at: number | null; expires_at: number | null
   created_at: number; updated_at: number; last_used_at: number | null
+  max_uses: number | null; used_count: number
   rate_per_minute: number; success_count: number; failure_count: number
 }
-export interface TokenInput { name: string; note: string; expires_at: number | null; rate_per_minute: number }
+export interface TokenInput { name: string; note: string; expires_at: number | null; rate_per_minute: number; max_uses: number | null }
 export const tokenApi = {
   async list(offset = 0, limit = 50): Promise<ApiToken[]> { return (await client.get('/tokens', { params: { offset, limit } })).data.data },
   async create(input: TokenInput): Promise<{ token: string; record: ApiToken }> { return (await client.post('/tokens', input)).data.data },
   async edit(id: string, input: Partial<TokenInput> & { enabled?: boolean }): Promise<ApiToken> { return (await client.patch(`/tokens/${encodeURIComponent(id)}`, input)).data.data },
+  async rotate(id: string): Promise<{ token: string; record: ApiToken }> { return (await client.post(`/tokens/${encodeURIComponent(id)}/rotate`)).data.data },
+  async resetUsage(id: string): Promise<ApiToken> { return (await client.post(`/tokens/${encodeURIComponent(id)}/reset-usage`)).data.data },
   async revoke(id: string): Promise<ApiToken> { return (await client.post(`/tokens/${encodeURIComponent(id)}/revoke`)).data.data },
 }
 export function tokenError(error: unknown): string {
@@ -23,11 +26,12 @@ export function tokenError(error: unknown): string {
   return '操作失败，请检查服务后重试'
 }
 
-export interface DirectlinkInput { share_url: string; password?: string; selected_fs_ids?: number[] }
-export interface DirectlinkFile { filename: string; size: number; url: string; headers: Record<string, string>; expires_at: number | null }
-export interface DirectlinkResult { task_id: string; save_path: string; files: DirectlinkFile[] }
+export interface DirectlinkInput { share_url: string; password?: string; selected_fs_ids?: number[]; selected_paths?: string[] }
+export interface DirectlinkFile { fs_id: number; name: string; path: string; is_dir: boolean; size: number; success: boolean; url: string | null; headers: Record<string, string>; expires_at: number | null; task_id: string | null; save_path: string | null; error: { code: string; message: string } | null }
+export interface DirectlinkResult { list: DirectlinkFile[]; total?: number; succeeded?: number; failed?: number; complete: boolean; error?: { code: string; message: string } }
 export const directlinkApi = {
   async resolve(input: DirectlinkInput): Promise<DirectlinkResult> {
-    return (await client.post('/resolve', input, { timeout: 190000 })).data.data
+    // Entire batch has no total timeout: server emits JSON whitespace heartbeats.
+    return (await client.post('/resolve', input, { timeout: 0 })).data
   },
 }

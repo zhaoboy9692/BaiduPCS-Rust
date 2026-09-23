@@ -81,7 +81,7 @@
         >
           <template #default>
             <div class="info-content">
-              分享直下会自动将文件转存到网盘临时目录，下载完成后自动清理临时文件。提取直链不会下载到服务器，转存文件保留；目前支持根目录普通文件，每次最多20个、总计2GiB。
+              分享直下会自动将文件转存到网盘临时目录，下载完成后自动清理临时文件。提取直链不会下载到服务器，转存文件保留；支持子目录文件；未选择文件时递归提取全部文件，逐文件显示成功或失败，不限制数量和大小。
             </div>
           </template>
         </el-alert>
@@ -122,7 +122,7 @@
         <el-button :disabled="extracting" @click="handleClose">取消</el-button>
         <el-button type="warning" :loading="extracting"
           :disabled="submitting || previewing || (step === 'select' && selectedFsIds.length === 0)"
-          @click="handleExtract">{{ extracting ? '提取中...' : '提取直链' }}</el-button>
+          @click="handleExtract">{{ extracting ? '逐文件提取中，请稍候…' : '提取直链' }}</el-button>
         <!-- 输入步骤：显示"选择分享文件"和"直下全部"按钮 -->
         <template v-if="step === 'input'">
           <el-button
@@ -256,6 +256,7 @@ async function handleExtract() {
     const result = await directlinkApi.resolve({
       share_url: form.shareUrl.trim(), password: form.password || undefined,
       selected_fs_ids: step.value === 'select' ? [...selectedFsIds.value] : undefined,
+      ...(step.value === 'select' ? { selected_paths: selectedFiles.value.map(f => f.path) } : {}),
     })
     if (!disposed) { linkResult.value = result; showLinks.value = true }
   } catch (error) {

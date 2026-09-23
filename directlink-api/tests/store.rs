@@ -6,6 +6,7 @@ fn input() -> CreateToken {
         note: "测试".into(),
         expires_at: Some(200),
         rate_per_minute: 2,
+        max_uses: None,
     }
 }
 
@@ -195,4 +196,116 @@ fn resolve_result_counters_are_durable_and_independent() {
         .authorize(&issued.token, 2)
         .unwrap();
     assert_eq!((record.success_count, record.failure_count), (1, 1));
+}
+
+#[test]
+fn lifetime_file_quota_is_persistent_editable_and_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("quota.db");
+    let store = Store::open(&path).unwrap();
+    let issued = store
+        .create(
+            serde_json::from_str(r#"{"name":"quota","max_uses":1}"#).unwrap(),
+            100,
+        )
+        .unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let s = Store::open(&path).unwrap();
+            let id = issued.record.id.clone();
+            let b = barrier.clone();
+            std::thread::spawn(move || {
+                b.wait();
+                s.reserve_file(&id, 101).is_ok()
+            })
+        })
+        .collect();
+    assert_eq!(
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .filter(|x| *x)
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .reserve_file(&issued.record.id, 102)
+            .unwrap_err()
+            .code(),
+        "token_quota_exhausted"
+    );
+    assert!(store.admit(&issued.token, 102, true).is_ok());
+    let r = store
+        .edit(
+            &issued.record.id,
+            serde_json::from_str(r#"{"note":"keep"}"#).unwrap(),
+            103,
+        )
+        .unwrap();
+    assert_eq!(r.max_uses, Some(1));
+    assert_eq!(r.used_count, 1);
+    store
+        .edit(
+            &issued.record.id,
+            serde_json::from_str(r#"{"max_uses":null}"#).unwrap(),
+            104,
+        )
+        .unwrap();
+    store.reserve_file(&issued.record.id, 105).unwrap();
+    drop(store);
+    let store = Store::open(&path).unwrap();
+    let r = store.list(0, 50).unwrap().remove(0);
+    assert_eq!(r.used_count, 2);
+    assert_eq!(r.max_uses, None);
+    store.revoke(&issued.record.id, 106).unwrap();
+    assert!(store.reserve_file(&issued.record.id, 107).is_err());
+}
+
+#[test]
+fn reset_usage_preserves_audit_and_rotation_never_restores_old_secret() {
+    let store = Store::open_memory().unwrap();
+    let issued = store.create(input(), 100).unwrap();
+    store.reserve_file(&issued.record.id, 101).unwrap();
+    store.record_result(&issued.record.id, false).unwrap();
+    store.revoke(&issued.record.id, 102).unwrap();
+    let rotated = store.rotate(&issued.record.id, 103).unwrap();
+    assert_ne!(issued.token, rotated.token);
+    assert!(store.authorize(&issued.token, 104).is_err());
+    assert!(store.authorize(&rotated.token, 104).is_ok());
+    assert_eq!(rotated.record.used_count, 1);
+    let reset = store.reset_usage(&issued.record.id, 105).unwrap();
+    assert_eq!(reset.used_count, 0);
+    assert_eq!(reset.failure_count, 1);
+    assert_eq!(reset.expires_at, Some(200));
+}
+
+#[test]
+fn rotation_invalidates_reservations_by_old_authenticated_caller() {
+    let store = Store::open_memory().unwrap();
+    let issued = store.create(input(), 100).unwrap();
+    store.rotate(&issued.record.id, 101).unwrap();
+    assert!(store
+        .reserve_authenticated(&issued.record.id, &issued.token, 102)
+        .is_err());
+    assert_eq!(store.list(0, 50).unwrap()[0].used_count, 0);
+}
+
+#[test]
+fn migrates_existing_deployed_database_without_changing_token_or_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    let store = Store::open(&path).unwrap();
+    let issued = store.create(input(), 100).unwrap();
+    store.record_result(&issued.record.id, true).unwrap();
+    drop(store);
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute_batch("ALTER TABLE api_tokens DROP COLUMN max_uses; ALTER TABLE api_tokens DROP COLUMN used_count;").unwrap();
+    drop(c);
+    let store = Store::open(&path).unwrap();
+    let record = store.authorize(&issued.token, 101).unwrap();
+    assert_eq!(record.max_uses, None);
+    assert_eq!(record.used_count, 0);
+    assert_eq!(record.success_count, 1);
 }

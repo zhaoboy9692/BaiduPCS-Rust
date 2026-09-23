@@ -42,6 +42,7 @@ async fn authenticated_invalid_url_is_rejected_before_upstream() {
     let token = store
         .create(
             CreateToken {
+                max_uses: None,
                 name: "test".into(),
                 note: "".into(),
                 expires_at: None,

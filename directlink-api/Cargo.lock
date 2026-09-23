@@ -92,6 +92,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "futures-util",
  "http-body-util",
  "rand 0.8.8",
  "reqwest",

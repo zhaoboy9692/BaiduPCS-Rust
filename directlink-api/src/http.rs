@@ -173,8 +173,22 @@ async fn revoke(
     let data = db(app, move |s| s.revoke(&id, now())).await?;
     Ok(Json(json!({"data":data})))
 }
+async fn rotate(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let data = db(app, move |s| s.rotate(&id, now())).await?;
+    Ok(Json(json!({"data":data})))
+}
+async fn reset_usage(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let data = db(app, move |s| s.reset_usage(&id, now())).await?;
+    Ok(Json(json!({"data":data})))
+}
 #[derive(Clone)]
-struct Caller(String);
+struct Caller(String, String);
 async fn bearer(
     State(app): State<App>,
     mut request: axum::extract::Request,
@@ -191,9 +205,12 @@ async fn bearer(
         _ => return Error::InvalidToken.into_response(),
     };
     let read = request.uri().path().ends_with("/preview");
+    let caller_secret = secret.clone();
     match db(app, move |s| s.admit(&secret, now(), read)).await {
         Ok(record) => {
-            request.extensions_mut().insert(Caller(record.id));
+            request
+                .extensions_mut()
+                .insert(Caller(record.id, caller_secret));
         }
         Err(e) => return e.into_response(),
     }
@@ -240,23 +257,60 @@ async fn resolve_share(
         return Error::Busy.into_response();
     };
     let upstream = upstream.clone();
-    // Keep the single permit until bounded work finishes even if the HTTP caller disconnects.
-    // This is not a task queue; the original service still owns the transfer task.
-    let work = tokio::spawn(async move {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    let quota = caller.map(|axum::Extension(Caller(id, secret))| (app.store.clone(), id, secret));
+    let mut work = tokio::spawn(async move {
         let _permit = permit;
-        let result = upstream.resolve(&input).await;
-        if let Some(axum::Extension(Caller(id))) = caller {
-            let success = result.is_ok();
-            db(app, move |s| s.record_result(&id, success)).await?;
-        }
-        result
+        upstream
+            .resolve_with_progress(&input, Some(tx), quota)
+            .await
     });
-    match work.await {
-        Ok(Ok(data)) => Json(json!({"data":data})).into_response(),
-        Ok(Err(e)) => e.into_response(),
-        Err(_) => Error::Upstream.into_response(),
-    }
+    // A JSON stream, not NDJSON: whitespace heartbeats keep long batches alive.
+    // Bounded channel provides backpressure; disconnect aborts discovery/remaining files.
+    let (bytes_tx, bytes_rx) =
+        tokio::sync::mpsc::channel::<Result<axum::body::Bytes, std::io::Error>>(2);
+    tokio::spawn(async move {
+        if bytes_tx.send(Ok("{\"list\":[".into())).await.is_err() {
+            work.abort();
+            return;
+        }
+        let mut first = true;
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
+        let mut rx_open = true;
+        loop {
+            tokio::select! {
+                _=bytes_tx.closed()=>{work.abort();return;}
+                item=rx.recv(),if rx_open=>{
+                    if let Some(item)=item {
+                        let prefix=if first {""} else {","}; first=false;
+                        let text=format!("{prefix}{}",serde_json::to_string(&item).unwrap());
+                        if bytes_tx.send(Ok(text.into())).await.is_err(){work.abort();return;}
+                    } else {rx_open=false;}
+                }
+                result=&mut work,if !rx_open=>{
+                    let tail=match result {
+                        Ok(Ok(result))=>format!("],\"total\":{},\"succeeded\":{},\"failed\":{},\"complete\":{}}}",result.total,result.succeeded,result.failed,result.complete),
+                        other=>{
+                            let error=match other {Ok(Err(e))=>e,_=>Error::Upstream};
+                            format!("],\"complete\":false,\"error\":{}}}",json!({"code":error.code(),"message":error.to_string()}))
+                        }
+                    };
+                    let _=bytes_tx.send(Ok(tail.into())).await;return;
+                }
+                _=ticker.tick()=>{if bytes_tx.send(Ok(" ".into())).await.is_err(){work.abort();return;}}
+            }
+        }
+    });
+    let stream = futures_util::stream::unfold(bytes_rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    });
+    Response::builder()
+        .header("content-type", "application/json")
+        .header("x-accel-buffering", "no")
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap()
 }
+
 pub fn router(store: Store, config: Config) -> Router {
     let app = App {
         store: Arc::new(store),
@@ -271,6 +325,8 @@ pub fn router(store: Store, config: Config) -> Router {
         .route("/direct-admin/v1/tokens", get(list).post(create))
         .route("/direct-admin/v1/tokens/:id", patch(edit))
         .route("/direct-admin/v1/tokens/:id/revoke", post(revoke))
+        .route("/direct-admin/v1/tokens/:id/rotate", post(rotate))
+        .route("/direct-admin/v1/tokens/:id/reset-usage", post(reset_usage))
         .route("/direct-admin/v1/shares/preview", post(preview_share))
         .route("/direct-admin/v1/resolve", post(resolve_share))
         .route_layer(middleware::from_fn_with_state(app.clone(), admin))

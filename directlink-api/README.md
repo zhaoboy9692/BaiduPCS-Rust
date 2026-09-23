@@ -31,26 +31,43 @@ curl --fail-with-body 'https://YOUR_HOST/direct-api/v1/resolve' \
   -d '{"share_url":"https://pan.baidu.com/s/SHARE_ID","password":"abcd"}'
 ```
 
-- POST `/direct-api/v1/shares/preview`：同上输入，返回 `data.files`（fs_id/name/path/is_dir/size）。仅预览第一页最多21项，不返回 share_info 内部凭据。
-- POST `/direct-api/v1/resolve`：同上，可选 `selected_fs_ids:[123,456]`（必须来自预览）。成功200：`data.task_id` 是**原任务ID**，`save_path` 是网盘保留目录，`files:[{filename,size,url,headers,expires_at:null}]`。
-- HTTP/HTTPS均可。HTTP传输Token和链接为明文，公网推荐HTTPS。
-- 同步最长180秒，调用端/反代超时需大于190秒。不提供第二套 jobs 查询/管理接口。超时、断开或重启不能保证百度侧转存取消，应查看原转存任务页，不立即重复提交。
-- 原普通转存显式 `auto_download=false`、`is_share_direct_download=false`，不下载内容到服务器。根目录 UUID 专用目录 `/.bpr_directlink_api_<uuid>` 保留，用原文件管理页清理；删除可能使直链失效。
-- 第一版仅支持根目录普通文件，每次最多20个、总计2GiB，不递归目录。预览/选择不在第一页、目录、超量请求明确报错。限流是请求数，不是下载带宽/网盘累计空间配额。
-- 链接自带权限，勿泄漏。返回 upstream 下载器使用的 User-Agent，不返回百度 Cookie，不承诺永久有效、免限速；外部可用性需真实小分享实测。
+- POST `/direct-api/v1/shares/preview`：递归分页浏览，返回 `data.files` 普通文件列表（fs_id/name/path/is_dir/size），不返回 share_info 内部凭据。浏览不计累计提取次数。
+- POST `/direct-api/v1/resolve`：省略 `selected_fs_ids` 时自动遍历所有文件夹中的普通文件。可传文件/文件夹 ID，选中文件夹递归展开；可选 `selected_paths` 仅作目录剪枝提示，元数据必须由原接口重新核实。无需在客户端传百度凭据。
+- 不限制文件个数或文件大小。每文件一个原转存任务/独立 UUID 目录；同名文件也不相互覆盖。一个失败不阻断后续文件。返回顶层 JSON `list`（不再是旧版 `data.files`）：
 
-错误为 `{code,message}`：401 invalid_token；403 token_disabled/token_expired；429 rate_limited（Retry-After）；400 invalid_input/share_password_required/share_password_invalid/share_unavailable；422 file_limit；503 resolver_busy/upstream_unavailable；504 resolve_timeout；502 transfer_failed。错误不透传上游原始内容。
+```json
+{
+  "list": [
+    {"fs_id":123,"name":"example.bin","path":"/folder/example.bin","is_dir":false,"size":5368709120,"success":true,"url":"https://download.example/file","headers":{"User-Agent":"原下载器UA"},"expires_at":null,"task_id":"原转存任务ID","save_path":"/.bpr_directlink_api_uuid","error":null},
+    {"fs_id":124,"name":"failed.bin","path":"/folder/failed.bin","is_dir":false,"size":100,"success":false,"url":null,"headers":{},"expires_at":null,"task_id":null,"save_path":null,"error":{"code":"token_quota_exhausted","message":"Token 提取次数已用尽，请联系管理员增加额度"}}
+  ],
+  "total":2,"succeeded":1,"failed":1,"complete":true
+}
+```
+
+`size` 单位字节。`complete` 表示目录是否完整枚举，不表示所有文件成功。读取目录失败时有 `is_dir:true` 失败条目、`complete:false`；顶层严重错误可返回 `error:{code,message}`。调用方必须检查每项 `success/error` 和顶层 `complete/error`，不能仅看 HTTP 200。
+
+- 长批次采用 HTTP chunked 输出**一个完整 JSON 文档**，不是 NDJSON。逐文件写出记录，10秒空白心跳避免 nginx 空闲超时；使用 `response.json()` 需等完整响应，调用端不要设190秒整批超时。响应头禁用 nginx 缓冲；反代空闲超时仍195秒。认证/输入错误在流开始前返回正常4xx；流开始后的错误写入 JSON。
+- 每文件最多等待180秒，单次原接口30秒超时；没有全批180秒上限。客户端断开停止后续文件，但已启动的原任务不能保证取消，应查看原转存任务页。没有新增第二套任务管理。
+- 原普通转存显式 `auto_download=false`、`is_share_direct_download=false`，不下载文件内容到服务器。目录 `/.bpr_directlink_api_<uuid>` 保留，用原文件管理页清理；删除可能使直链失效。
+- HTTP/HTTPS均可。HTTP传输Token和链接为明文，公网推荐HTTPS。返回原下载器 User-Agent，不返回百度 Cookie，不承诺永久有效或免限速。
+
+错误包含 invalid_token、token_disabled、token_expired、token_quota_exhausted、rate_limited、selection_not_found、directory_failed、upstream_unavailable、resolve_timeout、transfer_failed。错误不透传原始凭据。
 
 ## 管理 API
 
 网页 `/api-tokens` 使用原站管理员 Basic；服务端必须经 nginx 认证后覆盖注入 `X-Directlink-Admin-Key`，浏览器不可保存/提交这个密钥。管理同构 `/direct-admin/v1/resolve`、`/shares/preview`；无 API Token 也能在网页提取。
 
 - GET `/direct-admin/v1/tokens?offset=0&limit=50`（limit1–100）
-- POST `/direct-admin/v1/tokens`：name、note、expires_at（UTC秒/null）、rate_per_minute（1–60）。201响应 `data.token` **仅返回一次明文**。
-- PATCH `/direct-admin/v1/tokens/{id}`：修改信息/期限/限流/enabled；省略期限不改，null永久。
-- POST `/direct-admin/v1/tokens/{id}/revoke`：永久撤销，不可恢复。
+- POST `/direct-admin/v1/tokens`：name、note、expires_at（UTC秒/null）、rate_per_minute（1–60）、max_uses（累计文件尝试上限，null不限，0不允许提取）。201响应 `data.token` **仅返回一次明文**。
+- PATCH `/direct-admin/v1/tokens/{id}`：修改信息/期限/限流/enabled；省略期限不改，null永久。max_uses同样省略保留、null不限，可增加上限。
+- POST `/direct-admin/v1/tokens/{id}/revoke`：永久撤销当前密钥，普通“恢复”不会复活它。
+- POST `/direct-admin/v1/tokens/{id}/rotate`：重置 Token，生成全新密钥并启用，旧密钥永久失效；保留过期时间、次数上限、已用次数和历史统计。返回 `data.token` 仅显示一次。过期的记录仍需编辑有效期。
+- POST `/direct-admin/v1/tokens/{id}/reset-usage`：清零 `used_count`，保留上限、成功/失败统计和密钥状态。正在运行的提取会继续计数。
 
-SQLite只存随机256bit Token摘要。期限精确至秒，界面显示日期时分；撤销、禁用、到期每次请求校验。解析默认10次/分钟，预览60次/分钟，持久化固定窗口，窗口边界有突发。单并发提取/预览；有效解析进入上游执行后按请求结局记成功/失败，鉴权失败/输入非法/忙碌不算结果，断开后已开始的有限工作继续并计数；进程被杀可能不计数，不声称精确计费。
+累计次数按**每文件实际尝试**计1次（成功或失败均计；预览、没找到文件和额度不足未执行不计）。在 SQLite IMMEDIATE 事务中预约，防并发超额；每文件重新校验密钥/启用状态/期限，撤销或轮换后旧请求不能继续预约。返回 `max_uses` 与 `used_count`，剩余为上限减已用。旧数据库自动增加字段，旧 Token 默认不限，新增累计计数从升级后开始，不把历史按请求统计冒充文件次数。
+
+SQLite只存随机256bit Token摘要。期限精确至秒，界面显示日期时分；撤销、禁用、到期每次请求校验。解析默认10次/分钟，预览60次/分钟，持久化固定窗口，窗口边界有突发。单并发提取/预览；新提取按每文件已预约尝试记录成功/失败；旧版本遗留统计按请求计算。断开或进程被杀可能已扣次数但未记录最终结果，不声称精确计费。
 
 ## 部署边界
 
