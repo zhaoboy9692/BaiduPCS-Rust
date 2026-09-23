@@ -11,6 +11,10 @@ pub struct RuntimeConfig {
     pub database: PathBuf,
     pub admin_key: String,
     pub origins: Vec<String>,
+    #[serde(default)]
+    pub upstream_url: Option<String>,
+    #[serde(default)]
+    pub upstream_bearer: Option<String>,
 }
 impl RuntimeConfig {
     pub fn validate(&self) -> Result<(), Error> {
@@ -35,6 +39,11 @@ impl RuntimeConfig {
             }
         }
         Config::new(self.admin_key.clone(), self.origins.clone())?;
+        if let Some(url) = &self.upstream_url {
+            crate::upstream::Upstream::new(url, self.upstream_bearer.as_deref())?;
+        } else if self.upstream_bearer.is_some() {
+            return Err(Error::Input);
+        }
         Ok(())
     }
 }

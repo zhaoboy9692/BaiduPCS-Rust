@@ -1,6 +1,7 @@
 use crate::{
     error::Error,
     store::{CreateToken, EditToken, Store},
+    upstream::{ResolveInput, Upstream},
 };
 use axum::{
     extract::{DefaultBodyLimit, Path, Query, State},
@@ -21,6 +22,7 @@ use subtle::ConstantTimeEq;
 pub struct Config {
     admin_key: String,
     origins: Vec<String>,
+    upstream: Option<Upstream>,
 }
 impl Config {
     pub fn new(admin_key: String, origins: Vec<String>) -> Result<Self, Error> {
@@ -34,13 +36,22 @@ impl Config {
         {
             return Err(Error::Input);
         }
-        Ok(Self { admin_key, origins })
+        Ok(Self {
+            admin_key,
+            origins,
+            upstream: None,
+        })
+    }
+    pub fn with_upstream(mut self, upstream: Upstream) -> Self {
+        self.upstream = Some(upstream);
+        self
     }
 }
 #[derive(Clone)]
 struct App {
     store: Arc<Store>,
     config: Arc<Config>,
+    resolver: Arc<tokio::sync::Semaphore>,
 }
 fn now() -> i64 {
     SystemTime::now()
@@ -162,16 +173,108 @@ async fn revoke(
     let data = db(app, move |s| s.revoke(&id, now())).await?;
     Ok(Json(json!({"data":data})))
 }
+#[derive(Clone)]
+struct Caller(String);
+async fn bearer(
+    State(app): State<App>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let secret = match request
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.split_once(' '))
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+    {
+        Some((_, secret)) if !secret.is_empty() => secret.to_owned(),
+        _ => return Error::InvalidToken.into_response(),
+    };
+    let read = request.uri().path().ends_with("/preview");
+    match db(app, move |s| s.admit(&secret, now(), read)).await {
+        Ok(record) => {
+            request.extensions_mut().insert(Caller(record.id));
+        }
+        Err(e) => return e.into_response(),
+    }
+    next.run(request).await
+}
+async fn preview_share(
+    State(app): State<App>,
+    body: Result<Json<ResolveInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let input = match parse(body) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    if let Err(e) = input.validate() {
+        return e.into_response();
+    }
+    let Some(upstream) = &app.config.upstream else {
+        return Error::Upstream.into_response();
+    };
+    let Ok(_permit) = app.resolver.try_acquire() else {
+        return Error::Busy.into_response();
+    };
+    match upstream.preview(&input).await {
+        Ok(data) => Json(json!({"data":data})).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+async fn resolve_share(
+    State(app): State<App>,
+    caller: Option<axum::Extension<Caller>>,
+    body: Result<Json<ResolveInput>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let input = match parse(body) {
+        Ok(v) => v,
+        Err(r) => return *r,
+    };
+    if let Err(e) = input.validate() {
+        return e.into_response();
+    }
+    let Some(upstream) = &app.config.upstream else {
+        return Error::Upstream.into_response();
+    };
+    let Ok(permit) = app.resolver.clone().try_acquire_owned() else {
+        return Error::Busy.into_response();
+    };
+    let upstream = upstream.clone();
+    // Keep the single permit until bounded work finishes even if the HTTP caller disconnects.
+    // This is not a task queue; the original service still owns the transfer task.
+    let work = tokio::spawn(async move {
+        let _permit = permit;
+        let result = upstream.resolve(&input).await;
+        if let Some(axum::Extension(Caller(id))) = caller {
+            let success = result.is_ok();
+            db(app, move |s| s.record_result(&id, success)).await?;
+        }
+        result
+    });
+    match work.await {
+        Ok(Ok(data)) => Json(json!({"data":data})).into_response(),
+        Ok(Err(e)) => e.into_response(),
+        Err(_) => Error::Upstream.into_response(),
+    }
+}
 pub fn router(store: Store, config: Config) -> Router {
     let app = App {
         store: Arc::new(store),
         config: Arc::new(config),
+        resolver: Arc::new(tokio::sync::Semaphore::new(1)),
     };
+    let public = Router::new()
+        .route("/direct-api/v1/shares/preview", post(preview_share))
+        .route("/direct-api/v1/resolve", post(resolve_share))
+        .route_layer(middleware::from_fn_with_state(app.clone(), bearer));
     Router::new()
         .route("/direct-admin/v1/tokens", get(list).post(create))
         .route("/direct-admin/v1/tokens/:id", patch(edit))
         .route("/direct-admin/v1/tokens/:id/revoke", post(revoke))
+        .route("/direct-admin/v1/shares/preview", post(preview_share))
+        .route("/direct-admin/v1/resolve", post(resolve_share))
         .route_layer(middleware::from_fn_with_state(app.clone(), admin))
+        .merge(public)
         .fallback(|| async { Error::NotFound })
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(middleware::from_fn(no_cache))

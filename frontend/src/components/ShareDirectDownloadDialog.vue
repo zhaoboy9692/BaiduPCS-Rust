@@ -4,6 +4,8 @@
       title="分享直下"
       :width="isMobile ? '95%' : '550px'"
       :close-on-click-modal="false"
+      :close-on-press-escape="!extracting"
+      :show-close="!extracting"
       @open="handleOpen"
       @close="handleClose"
       :class="{ 'is-mobile': isMobile }"
@@ -30,7 +32,7 @@
             </template>
           </el-input>
           <div class="form-tip">
-            支持格式: pan.baidu.com/s/xxx 或 pan.baidu.com/share/init?surl=xxx
+            支持格式: pan.baidu.com/s/xxx 或 pan.baidu.com/share/init?surl=xxx；提取直链请使用 https:// 开头的完整链接。
           </div>
         </el-form-item>
 
@@ -79,7 +81,7 @@
         >
           <template #default>
             <div class="info-content">
-              分享直下会自动将文件转存到网盘临时目录，下载完成后自动清理临时文件。
+              分享直下会自动将文件转存到网盘临时目录，下载完成后自动清理临时文件。提取直链不会下载到服务器，转存文件保留；目前支持根目录普通文件，每次最多20个、总计2GiB。
             </div>
           </template>
         </el-alert>
@@ -117,13 +119,16 @@
 
     <template #footer>
       <div class="dialog-footer">
-        <el-button @click="handleClose">取消</el-button>
+        <el-button :disabled="extracting" @click="handleClose">取消</el-button>
+        <el-button type="warning" :loading="extracting"
+          :disabled="submitting || previewing || (step === 'select' && selectedFsIds.length === 0)"
+          @click="handleExtract">{{ extracting ? '提取中...' : '提取直链' }}</el-button>
         <!-- 输入步骤：显示"选择分享文件"和"直下全部"按钮 -->
         <template v-if="step === 'input'">
           <el-button
               type="primary"
               :loading="previewing"
-              :disabled="submitting"
+              :disabled="submitting || extracting"
               @click="handlePreview"
           >
             {{ previewing ? '加载中...' : '选择分享文件' }}
@@ -131,7 +136,7 @@
           <el-button
               type="success"
               :loading="submitting"
-              :disabled="previewing"
+              :disabled="previewing || extracting"
               @click="handleDirectDownloadAll"
           >
             {{ submitting ? '处理中...' : '直下全部' }}
@@ -142,7 +147,7 @@
             v-if="step === 'select'"
             type="primary"
             :loading="submitting"
-            :disabled="selectedFsIds.length === 0"
+            :disabled="selectedFsIds.length === 0 || extracting"
             @click="handleSubmit"
         >
           {{ submitting ? '处理中...' : '开始下载' }}
@@ -150,6 +155,8 @@
       </div>
     </template>
   </el-dialog>
+
+  <DirectlinkResultDialog v-model="showLinks" :result="linkResult" @update:model-value="value => { if (!value) linkResult = null }" />
 
   <!-- 下载目录选择弹窗 -->
   <FilePickerModal
@@ -165,7 +172,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, computed } from 'vue'
+import { ref, reactive, watch, computed, onBeforeUnmount } from 'vue'
+import DirectlinkResultDialog from './DirectlinkResultDialog.vue'
+import { directlinkApi, tokenError, type DirectlinkResult } from '@/api/directlink'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { Link, Key, Folder, ArrowLeft } from '@element-plus/icons-vue'
 import { useIsMobile } from '@/utils/responsive'
@@ -231,6 +240,29 @@ const passwordError = ref('')
 const downloadConfig = ref<DownloadConfig | null>(null)
 const showDownloadPicker = ref(false)
 
+const extracting = ref(false)
+const showLinks = ref(false)
+const linkResult = ref<DirectlinkResult | null>(null)
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
+async function handleExtract() {
+  if (extracting.value || submitting.value || previewing.value) return
+  try { await formRef.value?.validateField(['shareUrl', 'password']) } catch { return }
+  extracting.value = true
+  errorMessage.value = ''
+  linkResult.value = null
+  showLinks.value = false
+  try {
+    const result = await directlinkApi.resolve({
+      share_url: form.shareUrl.trim(), password: form.password || undefined,
+      selected_fs_ids: step.value === 'select' ? [...selectedFsIds.value] : undefined,
+    })
+    if (!disposed) { linkResult.value = result; showLinks.value = true }
+  } catch (error) {
+    if (!disposed) errorMessage.value = tokenError(error)
+  } finally { extracting.value = false }
+}
+
 // 表单验证规则
 const rules: FormRules = {
   shareUrl: [
@@ -287,6 +319,7 @@ async function handleOpen() {
 
 // 对话框关闭时重置所有状态
 function handleClose() {
+  if (extracting.value) return
   visible.value = false
   form.shareUrl = ''
   form.password = ''

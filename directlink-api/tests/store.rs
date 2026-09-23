@@ -175,3 +175,24 @@ fn rejects_invalid_input_and_bounds_pagination() {
         "not_found"
     );
 }
+
+#[test]
+fn resolve_result_counters_are_durable_and_independent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tokens.sqlite");
+    let store = Store::open(&path).unwrap();
+    let issued = store
+        .create(
+            serde_json::from_value(serde_json::json!({"name":"stats"})).unwrap(),
+            1,
+        )
+        .unwrap();
+    store.record_result(&issued.record.id, true).unwrap();
+    store.record_result(&issued.record.id, false).unwrap();
+    drop(store);
+    let record = Store::open(&path)
+        .unwrap()
+        .authorize(&issued.token, 2)
+        .unwrap();
+    assert_eq!((record.success_count, record.failure_count), (1, 1));
+}

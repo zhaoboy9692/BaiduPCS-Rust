@@ -25,6 +25,22 @@ pub enum Error {
     Admin,
     #[error("不允许的跨站请求")]
     Origin,
+    #[error("原服务不可用或响应异常，请检查原后台登录状态")]
+    Upstream,
+    #[error("分享需要提取码")]
+    PasswordRequired,
+    #[error("分享提取码错误")]
+    PasswordInvalid,
+    #[error("分享已失效或不存在")]
+    ShareUnavailable,
+    #[error("仅支持分享根目录普通文件，每次最多20个且总计不超过2GiB；请缩小选择范围")]
+    FileLimit,
+    #[error("正在处理其他提取请求，请稍后重试")]
+    Busy,
+    #[error("等待超时，转存可能仍在执行；请到原转存任务页面检查，勿立即重复提交")]
+    Timeout,
+    #[error("转存失败，请在原任务页面查看原因")]
+    TransferFailed,
     #[error("存储服务错误")]
     Storage,
 }
@@ -41,6 +57,14 @@ impl Error {
             Self::Admin => "admin_required",
             Self::Origin => "origin_denied",
             Self::Storage => "storage_error",
+            Self::Upstream => "upstream_unavailable",
+            Self::PasswordRequired => "share_password_required",
+            Self::PasswordInvalid => "share_password_invalid",
+            Self::ShareUnavailable => "share_unavailable",
+            Self::FileLimit => "file_limit",
+            Self::Busy => "resolver_busy",
+            Self::Timeout => "resolve_timeout",
+            Self::TransferFailed => "transfer_failed",
         }
     }
     pub fn status(&self) -> StatusCode {
@@ -51,6 +75,13 @@ impl Error {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Limited => StatusCode::TOO_MANY_REQUESTS,
             Self::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Upstream | Self::Busy => StatusCode::SERVICE_UNAVAILABLE,
+            Self::PasswordRequired | Self::PasswordInvalid | Self::ShareUnavailable => {
+                StatusCode::BAD_REQUEST
+            }
+            Self::FileLimit => StatusCode::UNPROCESSABLE_ENTITY,
+            Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
+            Self::TransferFailed => StatusCode::BAD_GATEWAY,
         }
     }
 }

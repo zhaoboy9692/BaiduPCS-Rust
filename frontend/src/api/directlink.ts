@@ -22,3 +22,12 @@ export function tokenError(error: unknown): string {
   }
   return '操作失败，请检查服务后重试'
 }
+
+export interface DirectlinkInput { share_url: string; password?: string; selected_fs_ids?: number[] }
+export interface DirectlinkFile { filename: string; size: number; url: string; headers: Record<string, string>; expires_at: number | null }
+export interface DirectlinkResult { task_id: string; save_path: string; files: DirectlinkFile[] }
+export const directlinkApi = {
+  async resolve(input: DirectlinkInput): Promise<DirectlinkResult> {
+    return (await client.post('/resolve', input, { timeout: 190000 })).data.data
+  },
+}

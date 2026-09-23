@@ -20,12 +20,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.validate()?;
     prepare_database(&config.database)?;
     let store = Store::open(&config.database)?;
-    let app = router(store, Config::new(config.admin_key, config.origins)?);
+    let mut http_config = Config::new(config.admin_key, config.origins)?;
+    if let Some(url) = config.upstream_url {
+        http_config = http_config.with_upstream(baidupcs_directlink_api::upstream::Upstream::new(
+            &url,
+            config.upstream_bearer.as_deref(),
+        )?);
+    }
+    let app = router(store, http_config);
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
-    eprintln!(
-        "Token administration listening on {} (direct-link resolver not yet enabled)",
-        config.listen
-    );
+    eprintln!("Directlink service listening on {}", config.listen);
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

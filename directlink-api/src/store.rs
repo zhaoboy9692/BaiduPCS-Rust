@@ -121,6 +121,15 @@ fn authorize(conn: &Connection, secret: &str, now: i64) -> Result<TokenRecord, E
     Ok(t)
 }
 impl Store {
+    pub fn record_result(&self, id: &str, success: bool) -> Result<(), Error> {
+        let conn = self.connection.lock().map_err(|_| Error::Storage)?;
+        let count=conn.execute("UPDATE api_tokens SET success_count=success_count+?1,failure_count=failure_count+?2 WHERE id=?3",params![i64::from(success),i64::from(!success),id])?;
+        if count != 1 {
+            return Err(Error::NotFound);
+        }
+        Ok(())
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         Self::initialize(Connection::open(path)?)
     }

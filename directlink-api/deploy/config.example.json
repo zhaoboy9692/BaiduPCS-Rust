@@ -1,0 +1,7 @@
+{
+  "listen": "127.0.0.1:18889",
+  "database": "/var/lib/baidupcs-directlink/tokens.sqlite",
+  "admin_key": "REPLACE_WITH_OPENSSL_RAND_HEX_32_OUTPUT",
+  "origins": ["http://YOUR_HOST", "https://YOUR_HOST"],
+  "upstream_url": "http://127.0.0.1:18888"
+}

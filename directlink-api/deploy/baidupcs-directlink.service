@@ -1,0 +1,28 @@
+[Unit]
+Description=BaiduPCS independent directlink API
+After=network-online.target baidupcs-rust.service
+Wants=network-online.target
+[Service]
+User=baidupcs-directlink
+Group=baidupcs-directlink
+ExecStart=/opt/baidupcs-directlink/current/baidupcs-directlink-api /etc/baidupcs-directlink/config.json
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/baidupcs-directlink
+InaccessiblePaths=-/var/lib/baidupcs-rust -/etc/baidupcs-rust -/etc/mobileandproxy
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=160M
+TasksMax=128
+[Install]
+WantedBy=multi-user.target

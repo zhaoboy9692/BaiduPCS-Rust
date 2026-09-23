@@ -19,14 +19,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
-      - run: cargo build --locked --release
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - uses: actions/upload-artifact@v4
         with:
-          name: directlink-token-admin-linux-amd64-development
-          path: directlink-api/target/release/baidupcs-directlink-api
+          name: directlink-api-linux-amd64-development
+          path: directlink-api/target/x86_64-unknown-linux-musl/release/baidupcs-directlink-api
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -41,6 +43,6 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       # Upstream v2.2.4 has a known FilesView search assertion failure.
-      # This job is explicitly scoped to the new token-management feature.
-      - run: npm test -- src/views/__tests__/ApiTokensView.test.ts src/utils/__tests__/directlinkClipboard.test.ts
+      # This job is explicitly scoped to the new directlink feature.
+      - run: npm test -- src/views/__tests__/ApiTokensView.test.ts src/utils/__tests__/directlinkClipboard.test.ts src/components/__tests__/ShareDirectlink.test.ts
       - run: npm run build
