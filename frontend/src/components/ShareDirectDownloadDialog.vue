@@ -81,7 +81,7 @@
         >
           <template #default>
             <div class="info-content">
-              分享直下会自动将文件转存到网盘临时目录，下载完成后自动清理临时文件。提取直链不会下载到服务器，转存文件保留；支持子目录文件；未选择文件时递归提取全部文件，逐文件显示成功或失败，不限制数量和大小。
+              分享直下会自动将文件转存到网盘临时目录，下载完成后自动清理临时文件。提取直链不会下载到服务器，转存文件保留；请先选择分享/提取文件，再勾选需要提取的普通文件；网页不会递归提取文件夹。
             </div>
           </template>
         </el-alert>
@@ -91,12 +91,14 @@
     <!-- 步骤2: 文件选择 -->
     <template v-if="step === 'select'">
       <div class="step-back">
-        <el-button link type="primary" @click="goBackToInput">
+        <el-button link type="primary" :disabled="extracting" @click="goBackToInput">
           <el-icon><ArrowLeft /></el-icon>
           返回修改
         </el-button>
       </div>
+      <el-alert :title="`直链仅提取当前目录已加载列表中勾选的普通文件（${extractFiles.length} 个）；全选不遍历子目录，文件夹勾选仅用于下载。`" type="info" :closable="false" />
       <ShareFileSelector
+          extraction
           :files="previewFiles"
           :loading="previewing"
           :share-info="shareInfo"
@@ -104,6 +106,7 @@
           :share-password="form.password || undefined"
           @update:selected-fs-ids="handleSelectionChange"
           @update:selected-files="handleSelectedFilesChange"
+          @update:extract-files="files => { extractFiles = files.filter(file => !file.is_dir) }"
       />
     </template>
 
@@ -120,10 +123,10 @@
     <template #footer>
       <div class="dialog-footer">
         <el-button :disabled="extracting" @click="handleClose">取消</el-button>
-        <el-button type="warning" :loading="extracting"
-          :disabled="submitting || previewing || (step === 'select' && selectedFsIds.length === 0)"
+        <el-button v-if="step === 'select'" type="warning" :loading="extracting"
+          :disabled="submitting || previewing || extractFiles.length === 0"
           @click="handleExtract">{{ extracting ? '逐文件提取中，请稍候…' : '提取直链' }}</el-button>
-        <!-- 输入步骤：显示"选择分享文件"和"直下全部"按钮 -->
+        <!-- 输入步骤：显示"选择分享/提取文件"和"直下全部"按钮 -->
         <template v-if="step === 'input'">
           <el-button
               type="primary"
@@ -131,7 +134,7 @@
               :disabled="submitting || extracting"
               @click="handlePreview"
           >
-            {{ previewing ? '加载中...' : '选择分享文件' }}
+            {{ previewing ? '加载中...' : '选择分享/提取文件' }}
           </el-button>
           <el-button
               type="success"
@@ -231,6 +234,7 @@ const previewing = ref(false)
 const previewFiles = ref<SharedFileInfo[]>([])
 const selectedFsIds = ref<number[]>([])
 const selectedFiles = ref<SharedFileInfo[]>([])
+const extractFiles = ref<SharedFileInfo[]>([])
 const shareInfo = ref<PreviewShareInfo | null>(null)
 
 // 状态
@@ -246,7 +250,9 @@ const linkResult = ref<DirectlinkResult | null>(null)
 let disposed = false
 onBeforeUnmount(() => { disposed = true })
 async function handleExtract() {
-  if (extracting.value || submitting.value || previewing.value) return
+  if (step.value !== 'select' || extracting.value || submitting.value || previewing.value) return
+  const files = extractFiles.value.filter(file => !file.is_dir)
+  if (files.length === 0) return
   try { await formRef.value?.validateField(['shareUrl', 'password']) } catch { return }
   extracting.value = true
   errorMessage.value = ''
@@ -255,8 +261,8 @@ async function handleExtract() {
   try {
     const result = await directlinkApi.resolve({
       share_url: form.shareUrl.trim(), password: form.password || undefined,
-      selected_fs_ids: step.value === 'select' ? [...selectedFsIds.value] : undefined,
-      ...(step.value === 'select' ? { selected_paths: selectedFiles.value.map(f => f.path) } : {}),
+      selected_fs_ids: files.map(file => file.fs_id),
+      selected_paths: files.map(file => file.path),
     })
     if (!disposed) { linkResult.value = result; showLinks.value = true }
   } catch (error) {
@@ -332,12 +338,15 @@ function handleClose() {
   previewFiles.value = []
   selectedFsIds.value = []
   selectedFiles.value = []
+  extractFiles.value = []
   shareInfo.value = null
   formRef.value?.resetFields()
 }
 
 // 返回输入步骤
 function goBackToInput() {
+  if (extracting.value) return
+  extractFiles.value = []
   step.value = 'input'
   errorMessage.value = ''
 }

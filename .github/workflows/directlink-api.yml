@@ -44,5 +44,5 @@ jobs:
       - run: npm ci
       # Upstream v2.2.4 has a known FilesView search assertion failure.
       # This job is explicitly scoped to the new directlink feature.
-      - run: npm test -- src/views/__tests__/ApiTokensView.test.ts src/utils/__tests__/directlinkClipboard.test.ts src/components/__tests__/ShareDirectlink.test.ts
+      - run: npm test -- src/views/__tests__/ApiTokensView.test.ts src/utils/__tests__/directlinkClipboard.test.ts src/components/__tests__/ShareDirectlink.test.ts src/components/__tests__/ShareFileExtractionSelection.test.ts
       - run: npm run build

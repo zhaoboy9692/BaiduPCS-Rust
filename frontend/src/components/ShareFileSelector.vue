@@ -31,12 +31,17 @@
         </div>
         <div class="header-bottom">
           <el-checkbox
-              :model-value="isAllCurrentSelected"
-              :indeterminate="isCurrentIndeterminate"
-              @change="handleSelectAllCurrent"
+              :model-value="extraction ? isAllOrdinarySelected : isAllCurrentSelected"
+              :indeterminate="extraction ? isOrdinaryIndeterminate : isCurrentIndeterminate"
+              @change="(value: boolean | string | number) => extraction ? handleSelectAllOrdinary(value) : handleSelectAllCurrent(value)"
           >
             全选
           </el-checkbox>
+          <el-checkbox v-if="extraction"
+              :model-value="isAllCurrentSelected"
+              :indeterminate="isCurrentIndeterminate"
+              @change="handleSelectAllCurrent"
+          >下载全选（含文件夹）</el-checkbox>
           <span class="select-info">
             已选 {{ totalSelectedCount }} 个文件
             <span v-if="selectedTotalSize > 0" class="size-info">
@@ -111,6 +116,8 @@ interface PathEntry {
 
 const props = defineProps<{
   files: SharedFileInfo[]
+  /** Only the share-direct-download dialog enables file-only extraction controls. */
+  extraction?: boolean
   loading: boolean
   shareInfo?: PreviewShareInfo | null
   /** 首次预览的分享链接（用于根目录分页加载） */
@@ -122,6 +129,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:selectedFsIds': [fsIds: number[]]
   'update:selectedFiles': [files: SharedFileInfo[]]
+  'update:extractFiles': [files: SharedFileInfo[]]
 }>()
 
 // 目录导航状态
@@ -224,6 +232,25 @@ watch(() => props.files, (newFiles) => {
   }
   emitSelection()
 }, { immediate: true })
+
+// 网页直链只使用当前已加载列表的普通文件，不复用下载的文件夹折叠结果。
+const ordinaryFiles = computed(() => currentFiles.value.filter(file => !file.is_dir))
+const isAllOrdinarySelected = computed(() => ordinaryFiles.value.length > 0 && ordinaryFiles.value.every(file => checkedFsIds.value.has(file.fs_id)))
+const isOrdinaryIndeterminate = computed(() => {
+  const count = ordinaryFiles.value.filter(file => checkedFsIds.value.has(file.fs_id)).length
+  return count > 0 && count < ordinaryFiles.value.length
+})
+watch(() => props.loading || navigating.value ? [] : ordinaryFiles.value.filter(file => checkedFsIds.value.has(file.fs_id)),
+    files => emit('update:extractFiles', files), { immediate: true })
+function handleSelectAllOrdinary(value: boolean | string | number) {
+  const next = new Set(checkedFsIds.value)
+  for (const file of ordinaryFiles.value) {
+    if (value) next.add(file.fs_id)
+    else next.delete(file.fs_id)
+  }
+  checkedFsIds.value = next
+  emitSelection()
+}
 
 // 全选/取消全选当前目录
 function handleSelectAllCurrent(val: boolean | string | number) {

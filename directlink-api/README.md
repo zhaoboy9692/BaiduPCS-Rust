@@ -8,7 +8,7 @@
 cargo fmt --manifest-path directlink-api/Cargo.toml --check
 cargo test --manifest-path directlink-api/Cargo.toml --locked
 cargo clippy --manifest-path directlink-api/Cargo.toml --locked --all-targets -- -D warnings
-npm test --prefix frontend -- src/views/__tests__/ApiTokensView.test.ts src/utils/__tests__/directlinkClipboard.test.ts src/components/__tests__/ShareDirectlink.test.ts
+npm test --prefix frontend -- src/views/__tests__/ApiTokensView.test.ts src/utils/__tests__/directlinkClipboard.test.ts src/components/__tests__/ShareDirectlink.test.ts src/components/__tests__/ShareFileExtractionSelection.test.ts
 npm run build --prefix frontend
 ```
 
@@ -19,6 +19,10 @@ npm run build --prefix frontend
 配置0600、数据库专用目录0700；Unix 回环监听，拒绝符号链接数据库路径。示例见 `deploy/config.example.json`，必须替换管理通道密钥与 origin。`upstream_url` 固定到原服务回环 HTTP，禁止任意主机/路径；可选 `upstream_bearer` 仅用于原服务内部认证，不是百度 Cookie，不返回调用者。省略 upstream_url 时仅 Token 管理可用。
 
 启动参数：`baidupcs-directlink-api /absolute/private/config.json`。
+
+## 网页提取范围
+
+输入链接后点击「选择分享/提取文件」，只在文件选择页显示「提取直链」。提取当前目录已加载列表中勾选的普通文件，空选择禁用；文件夹请先进入再选文件，不自动递归。「全选」只操作当前列表普通文件；「下载全选（含文件夹）」保留原下载能力。目录勾选、跨目录下载选项不作为网页直链请求。每个成功项有独立复制按钮，失败项显示原因。原转存/同步选择器不启用此界面模式。下面的 API 递归规则不受网页限制影响。
 
 ## 公共 API
 
