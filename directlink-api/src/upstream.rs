@@ -98,6 +98,12 @@ struct Envelope<T> {
     data: Option<T>,
 }
 #[derive(Deserialize)]
+struct Folder {
+    fs_id: u64,
+    path: String,
+    isdir: i32,
+}
+#[derive(Deserialize)]
 struct Created {
     task_id: Option<String>,
     need_password: bool,
@@ -238,8 +244,19 @@ impl Upstream {
         }
         // Root UUID folder: avoids parent mkdir conflicts and any caller-controlled path.
         let save_path = format!("/.bpr_directlink_api_{}", uuid::Uuid::new_v4());
+        let folder: Folder = self
+            .call(
+                Method::POST,
+                "/api/v1/files/folder",
+                &[],
+                Some(json!({"path":save_path})),
+            )
+            .await?;
+        if folder.path != save_path || folder.fs_id == 0 || folder.isdir != 1 {
+            return Err(Error::Upstream);
+        }
         let created:Created=self.call(Method::POST,"/api/v1/transfers",&[],Some(json!({
-            "share_url":input.share_url,"password":input.password,"save_path":save_path,"save_fs_id":0,
+            "share_url":input.share_url,"password":input.password,"save_path":save_path,"save_fs_id":folder.fs_id,
             "auto_download":false,"is_share_direct_download":false,
             "selected_fs_ids":selected.iter().map(|f|f.fs_id).collect::<Vec<_>>(),"selected_files":selected
         }))).await?;

@@ -29,6 +29,10 @@ async fn handler(State(state): State<Arc<Mutex<Fake>>>, req: Request) -> Json<Va
         );
     }
     let data = match path.as_str() {
+        "/api/v1/files/folder" => {
+            s.saved = input["path"].as_str().unwrap().into();
+            json!({"fs_id":90,"path":s.saved,"isdir":1})
+        }
         "/api/v1/transfers" => {
             s.saved = input["save_path"].as_str().unwrap().into();
             json!({"task_id":"original-task-1","status":"queued","need_password":false})
@@ -86,6 +90,20 @@ async fn resolves_with_existing_transfer_without_download_or_uid_override() {
         .find(|(p, _)| p == "/api/v1/transfers")
         .unwrap()
         .1;
+    let mkdir = s
+        .calls
+        .iter()
+        .position(|(p, _)| p == "/api/v1/files/folder");
+    let transfer_pos = s
+        .calls
+        .iter()
+        .position(|(p, _)| p == "/api/v1/transfers")
+        .unwrap();
+    assert!(
+        mkdir.is_some_and(|i| i < transfer_pos),
+        "destination must be created before transfer, including v2.2.4 release binary"
+    );
+    assert_eq!(transfer["save_fs_id"], 90);
     assert_eq!(transfer["auto_download"], false);
     assert_eq!(transfer["is_share_direct_download"], false);
     assert!(transfer.get("uid").is_none());
