@@ -41,3 +41,17 @@ created directory or a previously saved file as proof of automatic share extract
 Historical empty-directory cleanup is separate: the last delete attempt was
 blocked by expired/incomplete upstream login credentials. No deletion is part of
 this fix; successful share staging files must remain while their links are in use.
+
+## Deployed and verified
+
+- Fix commit: `1e818de`; GitHub Actions run `35845139834`, both jobs successful.
+- Linux artifact SHA-256: `2c994860145eb7f4f84cd8448a26f759c17f2633dea0e870e8f0478db368fd09`.
+- Sidecar current: `/opt/baidupcs-directlink/1e818de`; rollback: `50b8428`.
+- Private config and SQLite backup: `/etc/baidupcs-directlink/backup-1e818de-20260923-175255`.
+- Both original backend and sidecar active after deployment; nginx/frontend unchanged.
+- Normal Basic-authenticated web resolve endpoint automatically extracted the
+  selected `ida-pro_94_x64win.exe` in 9.5 seconds: total 1, succeeded 1, failed 0.
+- Task `ec411f4e-bf5d-41d4-a4c0-a3c7be972cf0`; no manual child directory creation.
+- Fresh link verified from server: HTTP 206, Content-Range `bytes 0-1023/635948872`,
+  1024 bytes received, `MZ` header. No executable was run or fully downloaded.
+- Raw signed result retained only in private server verification file, not Git.
