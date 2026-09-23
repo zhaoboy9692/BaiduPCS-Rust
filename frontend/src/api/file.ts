@@ -96,9 +96,9 @@ export async function getFileList(
 /**
  * 获取下载链接
  */
-export async function getDownloadUrl(fsId: number): Promise<string> {
+export async function getDownloadUrl(fsId: number, path: string): Promise<string> {
   const response = await apiClient.get<ApiResponse<DownloadUrlData>>('/files/download', {
-    params: { fs_id: fsId }
+    params: { fs_id: fsId, path }
   })
 
   if (response.data.code !== 0 || !response.data.data) {

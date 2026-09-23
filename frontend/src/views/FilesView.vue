@@ -255,8 +255,9 @@
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="280" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
+            <el-button type="primary" plain size="small" :disabled="row.is_encrypted || row.is_encrypted_folder" @click.stop="openDriveDirectlink(row)">直链</el-button>
             <!-- 分享按钮 -->
             <el-button
                 type="info"
@@ -326,6 +327,7 @@
             </div>
           </div>
           <div class="file-card-action">
+            <el-button type="primary" plain size="small" :disabled="item.is_encrypted || item.is_encrypted_folder" @click.stop="openDriveDirectlink(item)">直链</el-button>
             <el-button
                 type="info"
                 size="small"
@@ -360,6 +362,7 @@
       <el-empty v-if="!loading && !searchLoading && fileList.length === 0" :description="isSearchMode ? '未找到匹配的文件' : '当前目录为空'"/>
     </div>
 
+    <DriveDirectlinkDialog v-model="driveDirectlinkVisible" :item="driveDirectlinkItem" />
     <!-- 创建文件夹对话框 -->
     <el-dialog
         v-model="createFolderDialogVisible"
@@ -508,8 +511,16 @@ import {getEncryptionStatus} from '@/api/autobackup'
 import {FilePickerModal} from '@/components/FilePicker'
 import TransferDialog from '@/components/TransferDialog.vue'
 import ShareDialog from '@/components/ShareDialog.vue'
+import DriveDirectlinkDialog from '@/components/DriveDirectlinkDialog.vue'
 import ShareDirectDownloadDialog from '@/components/ShareDirectDownloadDialog.vue'
 import type {FileEntry} from '@/api/filesystem'
+
+const driveDirectlinkVisible = ref(false)
+const driveDirectlinkItem = ref<FileItem | null>(null)
+function openDriveDirectlink(item: FileItem) {
+  driveDirectlinkItem.value = item
+  driveDirectlinkVisible.value = true
+}
 
 // 响应式检测
 const isMobile = useIsMobile()
