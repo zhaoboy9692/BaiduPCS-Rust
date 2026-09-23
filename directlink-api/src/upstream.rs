@@ -166,6 +166,22 @@ struct Task {
     status: String,
     transferred_count: usize,
     total_count: usize,
+    error: Option<String>,
+}
+impl Task {
+    fn failure(&self) -> Error {
+        // Return only allowlisted messages. Raw task errors may contain cookies
+        // or signed URLs and must never be forwarded to public API callers.
+        let reason = self.error.as_deref().unwrap_or_default();
+        if reason.contains("登录已过期") || reason.contains("凭证不完整") {
+            Error::UpstreamLoginRequired
+        } else if reason.contains("转存路径不存在") || reason.contains("目标目录不存在")
+        {
+            Error::TransferPathMissing
+        } else {
+            Error::TransferFailed
+        }
+    }
 }
 #[derive(Deserialize)]
 struct FileList {
@@ -494,7 +510,15 @@ impl Upstream {
         selected_file: &ShareFile,
         item: &mut LinkFile,
     ) -> Result<(), Error> {
-        let selected = std::slice::from_ref(selected_file);
+        // v2.2.4 uses selected_files.path only to group destination directories;
+        // the actual share transfer identifies the source by fs_id. Each request
+        // here contains one ordinary file in a fresh UUID directory, so flatten
+        // that destination metadata instead of reproducing the share hierarchy.
+        // Keep the authoritative source path on `item` for callers. This also
+        // avoids the backend's missing-child-directory mkdir/listing ambiguity.
+        let mut transfer_file = selected_file.clone();
+        transfer_file.path = format!("/{}", selected_file.name);
+        let selected = std::slice::from_ref(&transfer_file);
         // Root UUID folder: avoids parent mkdir conflicts and any caller-controlled path.
         let save_path = format!("/.bpr_directlink_api_{}", uuid::Uuid::new_v4());
         item.save_path = Some(save_path.clone());
@@ -542,14 +566,14 @@ impl Upstream {
                     if task.transferred_count != selected.len()
                         || task.total_count != selected.len()
                     {
-                        return Err(Error::TransferFailed);
+                        return Err(task.failure());
                     }
                     break;
                 }
                 "queued" | "checking_share" | "transferring" => {
                     tokio::time::sleep(Duration::from_secs(1)).await
                 }
-                _ => return Err(Error::TransferFailed),
+                _ => return Err(task.failure()),
             }
         }
         let listing: FileList = self

@@ -13,6 +13,7 @@ struct Fake {
     saved: String,
     mode: String,
     chosen: Value,
+    missing_target: bool,
 }
 async fn handler(State(state): State<Arc<Mutex<Fake>>>, req: Request) -> Json<Value> {
     let path = req.uri().path().to_owned();
@@ -33,6 +34,11 @@ async fn handler(State(state): State<Arc<Mutex<Fake>>>, req: Request) -> Json<Va
         if ["nested", "deep", "dirfail"].contains(&s.mode.as_str()) {
             return Json(
                 json!({"code":0,"data":{"files":[{"fs_id":99,"name":"folder","path":"/original/folder","is_dir":true,"size":0}],"share_info":{"short_key":"1abc","shareid":"123","uk":"456","bdstoken":"PRIVATE","kind":"personal","token":"PRIVATE"}}}),
+            );
+        }
+        if s.mode == "private_path" {
+            return Json(
+                json!({"code":0,"data":{"files":[{"fs_id":1,"name":"a.txt","path":"/private/shared/a.txt","is_dir":false,"size":3}]}}),
             );
         }
         if s.mode == "many" {
@@ -76,12 +82,44 @@ async fn handler(State(state): State<Arc<Mutex<Fake>>>, req: Request) -> Json<Va
             s.saved = input["save_path"].as_str().unwrap().into();
             assert_eq!(input["selected_fs_ids"].as_array().unwrap().len(), 1);
             s.chosen = input["selected_files"][0].clone();
+            // v2.2.4 groups selected_files by parent after stripping the virtual
+            // root. With a share title in another namespace this preserves the
+            // nested parent; listing a missing directory can return success so
+            // the backend's ensure_dirs_exist does not actually create it.
+            if ["nested", "deep", "private_path"].contains(&s.mode.as_str()) {
+                let source = s.chosen["path"].as_str().unwrap();
+                let normalized = source.strip_prefix("/sharelink456-123").unwrap_or(source);
+                let parent = normalized.rsplit_once('/').unwrap().0;
+                let relative = parent
+                    .strip_prefix("/private")
+                    .unwrap_or(parent)
+                    .trim_matches('/');
+                let target = if relative.is_empty() {
+                    s.saved.clone()
+                } else {
+                    format!("{}/{relative}", s.saved)
+                };
+                s.missing_target = !s
+                    .calls
+                    .iter()
+                    .any(|(p, b)| p == "/api/v1/files/folder" && b["path"] == target);
+            }
             if s.mode == "mixed" && s.chosen["fs_id"] == 10 {
                 return Json(json!({"code":1007,"message":"private upstream detail"}));
             }
             json!({"task_id":"original-task-1","status":"queued","need_password":false})
         }
         "/api/v1/transfers/original-task-1" => {
+            if s.missing_target || s.mode == "missing_target" {
+                return Json(
+                    json!({"code":0,"data":{"status":"transfer_failed","transferred_count":0,"total_count":1,"error":"所有批次转存失败: errno=2 转存路径不存在 BDUSS=PRIVATE"}}),
+                );
+            }
+            if s.mode == "expired_login" {
+                return Json(
+                    json!({"code":0,"data":{"status":"transfer_failed","transferred_count":0,"total_count":1,"error":"账号登录已过期或凭证不完整（errno=-6） STOKEN=PRIVATE"}}),
+                );
+            }
             json!({"id":"original-task-1","status":"transferred","transferred_count":1,"total_count":1})
         }
         "/api/v1/files" => {
@@ -394,6 +432,71 @@ async fn deeply_nested_files_and_directory_failure_are_not_silently_omitted() {
                 "directory_failed"
             );
         }
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn single_file_transfer_is_flat_even_when_share_title_and_paths_use_different_roots() {
+    for (mode, original) in [
+        ("nested", "/sharelink456-123/folder/a.txt"),
+        ("deep", "/sharelink456-123/folder/inner/a.txt"),
+        ("private_path", "/private/shared/a.txt"),
+    ] {
+        let (upstream, state, task) = setup(mode).await;
+        let result = upstream.resolve(&input()).await.unwrap();
+        assert_eq!(result.succeeded, 1, "{mode}: {:?}", result.list[0].error);
+        assert_eq!(
+            result.list[0].path, original,
+            "public result keeps source path"
+        );
+        let s = state.lock().unwrap();
+        let transfer = &s
+            .calls
+            .iter()
+            .find(|(p, _)| p == "/api/v1/transfers")
+            .unwrap()
+            .1;
+        assert_eq!(transfer["selected_files"][0]["path"], "/a.txt");
+        assert_eq!(transfer["selected_files"][0]["fs_id"], 1);
+        assert_eq!(
+            s.calls
+                .iter()
+                .filter(|(p, _)| p == "/api/v1/files/folder")
+                .count(),
+            1,
+            "do not create unnecessary share directory trees"
+        );
+        task.abort();
+    }
+}
+
+#[tokio::test]
+async fn task_failure_exposes_safe_actionable_reason_not_raw_credentials() {
+    for (mode, code, message) in [
+        (
+            "missing_target",
+            "transfer_path_missing",
+            "转存目标目录不存在，请重试；若持续失败请联系管理员",
+        ),
+        (
+            "expired_login",
+            "upstream_login_required",
+            "网盘账号登录已过期或凭证不完整，请在原后台重新登录",
+        ),
+    ] {
+        let (upstream, state, task) = setup(mode).await;
+        let result = upstream.resolve(&input()).await.unwrap();
+        let error = result.list[0].error.as_ref().unwrap();
+        assert_eq!(error.code, code);
+        assert_eq!(error.message, message);
+        assert!(!serde_json::to_string(&result).unwrap().contains("PRIVATE"));
+        assert!(!state
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(p, _)| p.ends_with("/download")));
         task.abort();
     }
 }

@@ -45,6 +45,10 @@ pub enum Error {
     Timeout,
     #[error("转存失败，请在原任务页面查看原因")]
     TransferFailed,
+    #[error("转存目标目录不存在，请重试；若持续失败请联系管理员")]
+    TransferPathMissing,
+    #[error("网盘账号登录已过期或凭证不完整，请在原后台重新登录")]
+    UpstreamLoginRequired,
     #[error("存储服务错误")]
     Storage,
 }
@@ -71,6 +75,8 @@ impl Error {
             Self::Busy => "resolver_busy",
             Self::Timeout => "resolve_timeout",
             Self::TransferFailed => "transfer_failed",
+            Self::TransferPathMissing => "transfer_path_missing",
+            Self::UpstreamLoginRequired => "upstream_login_required",
         }
     }
     pub fn status(&self) -> StatusCode {
@@ -91,7 +97,9 @@ impl Error {
             }
             Self::SelectionNotFound | Self::DirectoryFailed => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Timeout => StatusCode::GATEWAY_TIMEOUT,
-            Self::TransferFailed => StatusCode::BAD_GATEWAY,
+            Self::TransferFailed | Self::TransferPathMissing | Self::UpstreamLoginRequired => {
+                StatusCode::BAD_GATEWAY
+            }
         }
     }
 }
