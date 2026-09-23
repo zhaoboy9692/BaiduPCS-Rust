@@ -1,0 +1,46 @@
+name: Directlink API (development)
+on:
+  push:
+    branches: [feat/directlink-token-api]
+    paths: ['directlink-api/**', 'frontend/**', '.github/workflows/directlink-api.yml']
+  pull_request:
+    paths: ['directlink-api/**', 'frontend/**', '.github/workflows/directlink-api.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  sidecar:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: directlink-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: directlink-token-admin-linux-amd64-development
+          path: directlink-api/target/release/baidupcs-directlink-api
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # Upstream v2.2.4 has a known FilesView search assertion failure.
+      # This job is explicitly scoped to the new token-management feature.
+      - run: npm test -- src/views/__tests__/ApiTokensView.test.ts src/utils/__tests__/directlinkClipboard.test.ts
+      - run: npm run build

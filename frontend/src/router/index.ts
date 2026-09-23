@@ -80,6 +80,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '分享管理' }
       },
       {
+        path: '/api-tokens',
+        name: 'ApiTokens',
+        component: () => import('@/views/ApiTokensView.vue'),
+        meta: { title: 'API Token' }
+      },
+      {
         path: '/settings',
         name: 'Settings',
         component: () => import('@/views/SettingsView.vue'),

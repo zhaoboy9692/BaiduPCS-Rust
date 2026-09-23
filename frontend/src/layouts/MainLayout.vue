@@ -67,6 +67,10 @@
           <el-icon><Setting /></el-icon>
           <template #title>系统设置</template>
         </el-menu-item>
+        <el-menu-item index="/api-tokens">
+          <el-icon><Key /></el-icon>
+          <template #title>API Token</template>
+        </el-menu-item>
       </el-menu>
 
       <div class="sidebar-footer">
@@ -150,6 +154,10 @@
           <el-menu-item index="/settings">
             <el-icon><Setting /></el-icon>
             <span>系统设置</span>
+          </el-menu-item>
+          <el-menu-item index="/api-tokens">
+            <el-icon><Key /></el-icon>
+            <span>API Token</span>
           </el-menu-item>
         </el-menu>
 
@@ -239,6 +247,7 @@
 </template>
 
 <script setup lang="ts">
+import { Key } from '@element-plus/icons-vue'
 import { ref, computed, watch, markRaw } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'

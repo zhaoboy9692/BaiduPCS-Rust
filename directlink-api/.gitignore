@@ -1,0 +1,6 @@
+/target/
+/config.json
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
